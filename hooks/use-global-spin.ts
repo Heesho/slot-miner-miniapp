@@ -193,9 +193,9 @@ export function useGlobalSpin() {
       try {
         const currentBlock = await publicClient.getBlockNumber();
 
-        // On first run, look back ~30 seconds (15 blocks) and set initial state
+        // On first run, look back ~2 hours (3600 blocks at 2s/block) to find last win
         if (lastProcessedBlockRef.current === null) {
-          const fromBlock = currentBlock - BigInt(15);
+          const fromBlock = currentBlock - BigInt(3600);
 
           // Fetch recent win for initial display
           const winLogs = await publicClient.getLogs({
