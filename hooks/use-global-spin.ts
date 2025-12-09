@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePublicClient, useWatchContractEvent } from "wagmi";
+import { usePublicClient } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatUnits, type Address, parseAbiItem } from "viem";
-import { CONTRACT_ADDRESSES, RIG_ABI } from "@/lib/contracts";
+import { CONTRACT_ADDRESSES } from "@/lib/contracts";
 
 // Slot symbols mapping
 export type SlotSymbol = {
@@ -81,180 +81,226 @@ async function fetchUserByAddress(address: string): Promise<UserInfo | null> {
   }
 }
 
+const SPIN_EVENT = parseAbiItem('event Rig__Spin(address indexed sender, address indexed spinner, uint256 indexed epochId, uint256 price)');
+const WIN_EVENT = parseAbiItem('event Rig__Win(address indexed spinner, uint256 indexed epochId, uint256 oddsPercent, uint256 amount)');
+const POLL_INTERVAL_MS = 2000; // Poll every 2 seconds
+
 export function useGlobalSpin() {
   const [activeSpin, setActiveSpin] = useState<GlobalSpinState | null>(null);
   const [lastWin, setLastWin] = useState<GlobalWinState | null>(null);
   const [isGlobalSpinning, setIsGlobalSpinning] = useState(false);
   const [showWinResult, setShowWinResult] = useState(false);
+
+  const lastProcessedBlockRef = useRef<bigint | null>(null);
+  const lastWinIdRef = useRef<string | null>(null);
   const spinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const winDisplayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasFetchedInitial = useRef(false);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const publicClient = usePublicClient({ chainId: base.id });
 
-  // Fetch the most recent win on mount
-  useEffect(() => {
-    if (hasFetchedInitial.current || !publicClient) return;
-    hasFetchedInitial.current = true;
+  // Process a win event
+  const processWinEvent = useCallback(async (
+    spinner: Address,
+    epochId: bigint,
+    oddsPercent: bigint,
+    amount: bigint,
+    txHash: string,
+    isNew: boolean
+  ) => {
+    const winId = `win-${spinner}-${epochId.toString()}-${txHash}`;
 
-    const fetchRecentWin = async () => {
+    // Skip if we already processed this win
+    if (lastWinIdRef.current === winId) return;
+    lastWinIdRef.current = winId;
+
+    const symbol = getSymbolFromOdds(Number(oddsPercent));
+
+    // Clear active spin
+    if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+    setActiveSpin(null);
+    setIsGlobalSpinning(false);
+
+    const newWin: GlobalWinState = {
+      id: winId,
+      spinner,
+      epochId,
+      oddsBps: Number(oddsPercent),
+      amount,
+      timestamp: Date.now(),
+      symbol,
+      amountFormatted: formatAmount(amount),
+      usdValue: (Number(formatUnits(amount, DOTARD_DECIMALS)) * DOTARD_PRICE_USD).toFixed(2),
+    };
+
+    setLastWin(newWin);
+
+    // Only show win animation for new wins (not on page load)
+    if (isNew) {
+      setShowWinResult(true);
+
+      // Hide win result after delay
+      if (winDisplayRef.current) clearTimeout(winDisplayRef.current);
+      winDisplayRef.current = setTimeout(() => {
+        setShowWinResult(false);
+      }, 10000);
+    }
+
+    // Fetch user info async
+    const user = await fetchUserByAddress(spinner);
+    if (user) {
+      setLastWin(prev => prev?.id === winId ? { ...prev, user } : prev);
+    }
+  }, []);
+
+  // Process a spin event
+  const processSpinEvent = useCallback(async (
+    spinner: Address,
+    epochId: bigint
+  ) => {
+    const id = `spin-${spinner}-${epochId.toString()}`;
+
+    const newSpin: GlobalSpinState = {
+      id,
+      spinner,
+      epochId,
+      timestamp: Date.now(),
+    };
+
+    setActiveSpin(newSpin);
+    setIsGlobalSpinning(true);
+    setShowWinResult(false);
+
+    // Fetch user info async
+    const user = await fetchUserByAddress(spinner);
+    if (user) {
+      setActiveSpin(prev => prev?.id === id ? { ...prev, user } : prev);
+    }
+
+    // Auto-clear after timeout
+    if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+    spinTimeoutRef.current = setTimeout(() => {
+      setActiveSpin(prev => prev?.id === id ? null : prev);
+      setIsGlobalSpinning(false);
+    }, SPIN_TIMEOUT_MS);
+  }, []);
+
+  // Poll for new events
+  useEffect(() => {
+    if (!publicClient) return;
+
+    const pollForEvents = async () => {
       try {
         const currentBlock = await publicClient.getBlockNumber();
-        // Look back ~1 hour of blocks (assuming ~2s block time on Base)
-        const fromBlock = currentBlock - BigInt(1800);
 
-        const logs = await publicClient.getLogs({
+        // On first run, look back ~30 seconds (15 blocks) and set initial state
+        if (lastProcessedBlockRef.current === null) {
+          const fromBlock = currentBlock - BigInt(15);
+
+          // Fetch recent win for initial display
+          const winLogs = await publicClient.getLogs({
+            address: CONTRACT_ADDRESSES.rig as Address,
+            event: WIN_EVENT,
+            fromBlock: fromBlock > 0n ? fromBlock : 0n,
+            toBlock: currentBlock,
+          });
+
+          if (winLogs.length > 0) {
+            const latestLog = winLogs[winLogs.length - 1];
+            const args = latestLog.args as {
+              spinner: Address;
+              epochId: bigint;
+              oddsPercent: bigint;
+              amount: bigint;
+            };
+            await processWinEvent(
+              args.spinner,
+              args.epochId,
+              args.oddsPercent,
+              args.amount,
+              latestLog.transactionHash,
+              false // not new, don't show animation
+            );
+          }
+
+          lastProcessedBlockRef.current = currentBlock;
+          return;
+        }
+
+        // Only look at new blocks
+        const fromBlock = lastProcessedBlockRef.current + 1n;
+        if (fromBlock > currentBlock) return;
+
+        // Check for spin events
+        const spinLogs = await publicClient.getLogs({
           address: CONTRACT_ADDRESSES.rig as Address,
-          event: parseAbiItem('event Rig__Win(address indexed spinner, uint256 indexed epochId, uint256 oddsPercent, uint256 amount)'),
-          fromBlock: fromBlock > 0n ? fromBlock : 0n,
+          event: SPIN_EVENT,
+          fromBlock,
           toBlock: currentBlock,
         });
 
-        if (logs.length > 0) {
-          // Get the most recent win
-          const latestLog = logs[logs.length - 1];
-          const { spinner, epochId, oddsPercent, amount } = latestLog.args as {
+        for (const log of spinLogs) {
+          const args = log.args as {
+            sender: Address;
+            spinner: Address;
+            epochId: bigint;
+            price: bigint;
+          };
+          await processSpinEvent(args.spinner, args.epochId);
+        }
+
+        // Check for win events
+        const winLogs = await publicClient.getLogs({
+          address: CONTRACT_ADDRESSES.rig as Address,
+          event: WIN_EVENT,
+          fromBlock,
+          toBlock: currentBlock,
+        });
+
+        for (const log of winLogs) {
+          const args = log.args as {
             spinner: Address;
             epochId: bigint;
             oddsPercent: bigint;
             amount: bigint;
           };
-
-          const winId = `win-${spinner}-${epochId.toString()}-${latestLog.transactionHash}`;
-          const symbol = getSymbolFromOdds(Number(oddsPercent));
-
-          const newWin: GlobalWinState = {
-            id: winId,
-            spinner,
-            epochId,
-            oddsBps: Number(oddsPercent),
-            amount,
-            timestamp: Date.now(), // We don't have exact timestamp, use now
-            symbol,
-            amountFormatted: formatAmount(amount),
-            usdValue: (Number(formatUnits(amount, DOTARD_DECIMALS)) * DOTARD_PRICE_USD).toFixed(2),
-          };
-
-          setLastWin(newWin);
-
-          // Fetch user info
-          const user = await fetchUserByAddress(spinner);
-          if (user) {
-            setLastWin(prev => prev?.id === winId ? { ...prev, user } : prev);
-          }
+          await processWinEvent(
+            args.spinner,
+            args.epochId,
+            args.oddsPercent,
+            args.amount,
+            log.transactionHash,
+            true // new win, show animation
+          );
         }
+
+        lastProcessedBlockRef.current = currentBlock;
       } catch (error) {
-        console.error('Failed to fetch recent win:', error);
+        console.error('Failed to poll for events:', error);
       }
     };
 
-    fetchRecentWin();
-  }, [publicClient]);
+    // Initial poll
+    pollForEvents();
+
+    // Set up polling interval
+    pollIntervalRef.current = setInterval(pollForEvents, POLL_INTERVAL_MS);
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [publicClient, processWinEvent, processSpinEvent]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
       if (winDisplayRef.current) clearTimeout(winDisplayRef.current);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
   }, []);
-
-  // Watch for global spin events
-  useWatchContractEvent({
-    address: CONTRACT_ADDRESSES.rig as Address,
-    abi: RIG_ABI,
-    eventName: 'Rig__Spin',
-    chainId: base.id,
-    onLogs: useCallback(async (logs: { args: unknown; transactionHash: string }[]) => {
-      for (const log of logs) {
-        const { spinner, epochId } = log.args as {
-          sender: Address;
-          spinner: Address;
-          epochId: bigint;
-          price: bigint;
-        };
-
-        const id = `spin-${spinner}-${epochId.toString()}`;
-
-        const newSpin: GlobalSpinState = {
-          id,
-          spinner,
-          epochId,
-          timestamp: Date.now(),
-        };
-
-        setActiveSpin(newSpin);
-        setIsGlobalSpinning(true);
-        setShowWinResult(false);
-
-        // Fetch user info async
-        const user = await fetchUserByAddress(spinner);
-        if (user) {
-          setActiveSpin(prev => prev?.id === id ? { ...prev, user } : prev);
-        }
-
-        // Auto-clear after timeout
-        if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
-        spinTimeoutRef.current = setTimeout(() => {
-          setActiveSpin(prev => prev?.id === id ? null : prev);
-          setIsGlobalSpinning(false);
-        }, SPIN_TIMEOUT_MS);
-      }
-    }, []),
-  });
-
-  // Watch for global win events
-  useWatchContractEvent({
-    address: CONTRACT_ADDRESSES.rig as Address,
-    abi: RIG_ABI,
-    eventName: 'Rig__Win',
-    chainId: base.id,
-    onLogs: useCallback(async (logs: { args: unknown; transactionHash: string }[]) => {
-      for (const log of logs) {
-        const { spinner, epochId, oddsPercent, amount } = log.args as {
-          spinner: Address;
-          epochId: bigint;
-          oddsPercent: bigint;
-          amount: bigint;
-        };
-
-        const winId = `win-${spinner}-${epochId.toString()}-${log.transactionHash}`;
-        const symbol = getSymbolFromOdds(Number(oddsPercent));
-
-        // Clear active spin
-        if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
-        setActiveSpin(null);
-        setIsGlobalSpinning(false);
-
-        const newWin: GlobalWinState = {
-          id: winId,
-          spinner,
-          epochId,
-          oddsBps: Number(oddsPercent),
-          amount,
-          timestamp: Date.now(),
-          symbol,
-          amountFormatted: formatAmount(amount),
-          usdValue: (Number(formatUnits(amount, DOTARD_DECIMALS)) * DOTARD_PRICE_USD).toFixed(2),
-        };
-
-        setLastWin(newWin);
-        setShowWinResult(true);
-
-        // Fetch user info async
-        const user = await fetchUserByAddress(spinner);
-        if (user) {
-          setLastWin(prev => prev?.id === winId ? { ...prev, user } : prev);
-        }
-
-        // Hide win result after delay (but keep lastWin for display)
-        if (winDisplayRef.current) clearTimeout(winDisplayRef.current);
-        winDisplayRef.current = setTimeout(() => {
-          setShowWinResult(false);
-        }, 10000);
-      }
-    }, []),
-  });
 
   return {
     activeSpin,
