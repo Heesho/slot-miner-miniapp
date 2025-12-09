@@ -1,27 +1,30 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { sdk } from "@farcaster/miniapp-sdk";
-import { CircleUserRound, Volume2, VolumeOff } from "lucide-react";
 import {
   useAccount,
   useConnect,
   useReadContract,
   useWaitForTransactionReceipt,
   useWriteContract,
+  useWatchContractEvent,
 } from "wagmi";
 import { base } from "wagmi/chains";
 import { formatEther, formatUnits, zeroAddress, type Address } from "viem";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { CONTRACT_ADDRESSES, MULTICALL_ABI } from "@/lib/contracts";
+import { CONTRACT_ADDRESSES, MULTICALL_ABI, RIG_ABI } from "@/lib/contracts";
 import { cn, getEthPrice } from "@/lib/utils";
-import { useAccountData } from "@/hooks/useAccountData";
 import { NavBar } from "@/components/nav-bar";
-import { AddToFarcasterDialog } from "@/components/add-to-farcaster-dialog";
+import { DonutSymbol } from "@/components/donut-icon";
+import { ActivityFeed, useGlobalSpin } from "@/components/activity-feed";
+import { getRandomSymbol as getGlobalRandomSymbol, type SlotSymbol as GlobalSlotSymbol } from "@/hooks/use-global-spin";
+
+// ============================================
+// TYPES
+// ============================================
 
 type MiniAppContext = {
   user?: {
@@ -32,24 +35,47 @@ type MiniAppContext = {
   };
 };
 
-type MinerState = {
-  epochId: bigint | number;
-  initPrice: bigint;
-  startTime: bigint | number;
-  glazed: bigint;
-  price: bigint;
-  dps: bigint;
-  nextDps: bigint;
-  donutPrice: bigint;
-  miner: Address;
-  uri: string;
+type RigState = {
+  ups: bigint;
+  unitPrice: bigint;
+  unitBalance: bigint;
   ethBalance: bigint;
   wethBalance: bigint;
-  donutBalance: bigint;
+  prizePool: bigint;
+  pendingEmissions: bigint;
+  epochId: bigint;
+  price: bigint;
 };
 
-const DONUT_DECIMALS = 18;
+type SpinState = 'idle' | 'pending' | 'confirming' | 'waiting_vrf';
+
+// ============================================
+// CONSTANTS
+// ============================================
+
+const DOTARD_DECIMALS = 18;
+const DOTARD_PRICE_USD = 0.10; // Hardcoded price
 const DEADLINE_BUFFER_SECONDS = 15 * 60;
+const VRF_TIMEOUT_MS = 120_000; // 2 minutes timeout for VRF
+const BALANCE_POLL_INTERVAL_MS = 2_000; // Poll balance every 2 seconds as fallback
+
+// Slot machine symbols with their odds
+// payout = % of prize pool you win
+// chance = probability of landing on this symbol
+const SLOT_SYMBOLS = [
+  { emoji: '🍒', name: 'Cherry', oddsBps: 100, payout: '1%', chance: '50%', tier: 'small' as const },
+  { emoji: '🍋', name: 'Lemon', oddsBps: 200, payout: '2%', chance: '25%', tier: 'small' as const },
+  { emoji: '📊', name: 'Bar', oddsBps: 500, payout: '5%', chance: '15%', tier: 'medium' as const },
+  { emoji: '🔔', name: 'Bell', oddsBps: 1000, payout: '10%', chance: '7%', tier: 'big' as const },
+  { emoji: '7️⃣', name: 'Seven', oddsBps: 2500, payout: '25%', chance: '2.5%', tier: 'mega' as const },
+  { emoji: '💎', name: 'Diamond', oddsBps: 5000, payout: '50%', chance: '0.5%', tier: 'jackpot' as const },
+] as const;
+
+type SlotSymbol = typeof SLOT_SYMBOLS[number];
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
 
 const toBigInt = (value: bigint | number) =>
   typeof value === "bigint" ? value : BigInt(value);
@@ -80,54 +106,193 @@ const formatEth = (value: bigint, maximumFractionDigits = 4) => {
   });
 };
 
-const formatAddress = (addr?: string) => {
-  if (!addr) return "—";
-  const normalized = addr.toLowerCase();
-  if (normalized === zeroAddress) return "No miner";
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-};
 
-const initialsFrom = (label?: string) => {
-  if (!label) return "";
-  const stripped = label.replace(/[^a-zA-Z0-9]/g, "");
-  if (!stripped) return label.slice(0, 2).toUpperCase();
-  return stripped.slice(0, 2).toUpperCase();
-};
+// ============================================
+// SLOT REEL COMPONENT
+// ============================================
 
-export default function HomePage() {
+// Generate array of symbols for the reel strip
+const REEL_SYMBOLS = [...SLOT_SYMBOLS, ...SLOT_SYMBOLS, ...SLOT_SYMBOLS]; // 18 symbols
+
+function SlotReel({
+  isSpinning,
+  isIdleSpin = false,
+  symbol,
+  delay = 0,
+  isWinning = false,
+  idleSpeed = 0.04,
+  showResult = false,
+}: {
+  isSpinning: boolean;
+  isIdleSpin?: boolean;
+  symbol: GlobalSlotSymbol | null;
+  delay?: number;
+  isWinning?: boolean;
+  idleSpeed?: number;
+  showResult?: boolean;
+}) {
+  const [displaySymbol, setDisplaySymbol] = useState<GlobalSlotSymbol>(SLOT_SYMBOLS[0]);
+  const [landed, setLanded] = useState(false);
+  const [reelOffset, setReelOffset] = useState(0);
+  const animationRef = useRef<number | null>(null);
+  const wasSpinningRef = useRef(false);
+  const hasInitialized = useRef(false);
+
+  // Set random initial offset on client only to avoid hydration mismatch
+  useEffect(() => {
+    if (!hasInitialized.current) {
+      hasInitialized.current = true;
+      setReelOffset(Math.random() * REEL_SYMBOLS.length * 48);
+    }
+  }, []);
+
+  // Single animation loop that handles both idle and active spinning
+  useEffect(() => {
+    // Cleanup previous animation
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+
+    if (isSpinning) {
+      // Fast spin
+      wasSpinningRef.current = true;
+      setLanded(false);
+      let lastTime = performance.now();
+      const animate = (currentTime: number) => {
+        const delta = currentTime - lastTime;
+        lastTime = currentTime;
+        setReelOffset(prev => (prev + delta * 1.5) % (REEL_SYMBOLS.length * 48));
+        animationRef.current = requestAnimationFrame(animate);
+      };
+      animationRef.current = requestAnimationFrame(animate);
+    } else if (showResult && symbol) {
+      // Show result - don't animate, stay on symbol
+      // Animation is stopped, symbol prop is displayed via getVisibleSymbols
+    } else if (isIdleSpin) {
+      // Slow idle drift with variable speed
+      let lastTime = performance.now();
+      const animate = (currentTime: number) => {
+        const delta = currentTime - lastTime;
+        lastTime = currentTime;
+        setReelOffset(prev => (prev + delta * idleSpeed) % (REEL_SYMBOLS.length * 48));
+        animationRef.current = requestAnimationFrame(animate);
+      };
+      animationRef.current = requestAnimationFrame(animate);
+    }
+
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [isSpinning, isIdleSpin, idleSpeed, showResult, symbol]);
+
+  // Handle landing on symbol when spin ends
+  useEffect(() => {
+    if (!isSpinning && symbol && wasSpinningRef.current) {
+      const timer = setTimeout(() => {
+        setDisplaySymbol(symbol);
+        setLanded(true);
+      }, delay);
+      wasSpinningRef.current = false;
+      return () => clearTimeout(timer);
+    } else if (!isSpinning && symbol && !wasSpinningRef.current) {
+      setDisplaySymbol(symbol);
+    }
+  }, [isSpinning, symbol, delay]);
+
+  // Get symbols for vertical strip display
+  const getVisibleSymbols = () => {
+    // When showing result, use the symbol prop directly
+    if (showResult && symbol) {
+      const symIdx = SLOT_SYMBOLS.findIndex(s => s.emoji === symbol.emoji);
+      const prevIdx = (symIdx - 1 + SLOT_SYMBOLS.length) % SLOT_SYMBOLS.length;
+      const nextIdx = (symIdx + 1) % SLOT_SYMBOLS.length;
+      return [SLOT_SYMBOLS[prevIdx], symbol, SLOT_SYMBOLS[nextIdx]];
+    }
+    const baseIndex = Math.floor(reelOffset / 48) % REEL_SYMBOLS.length;
+    return [
+      REEL_SYMBOLS[(baseIndex + REEL_SYMBOLS.length - 1) % REEL_SYMBOLS.length],
+      REEL_SYMBOLS[baseIndex],
+      REEL_SYMBOLS[(baseIndex + 1) % REEL_SYMBOLS.length],
+    ];
+  };
+
+  const visibleSymbols = getVisibleSymbols();
+  const subOffset = (showResult && symbol) ? 0 : reelOffset % 48;
+
+  return (
+    <div className={cn(
+      "relative w-[72px] h-[80px] overflow-hidden rounded-lg",
+      "bg-zinc-800/50",
+      isSpinning ? "ring-1 ring-yellow-500/50" : "",
+      isWinning && landed && "ring-2 ring-yellow-400"
+    )}>
+      {/* Reel strip container */}
+      <div
+        className="absolute inset-x-0 flex flex-col items-center"
+        style={{
+          transform: `translateY(${-subOffset + 16}px)`,
+        }}
+      >
+        {visibleSymbols.map((sym, idx) => (
+          <div
+            key={`${sym.emoji}-${idx}`}
+            className={cn(
+              "flex items-center justify-center w-full h-12 text-3xl",
+              isSpinning && "blur-[1px]"
+            )}
+          >
+            {sym.emoji}
+          </div>
+        ))}
+      </div>
+
+      {/* Win glow */}
+      {isWinning && landed && (
+        <div className="absolute inset-0 bg-yellow-400/10 animate-pulse pointer-events-none" />
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// MAIN COMPONENT
+// ============================================
+
+export default function DonutardioPage() {
   const readyRef = useRef(false);
   const autoConnectAttempted = useRef(false);
   const [context, setContext] = useState<MiniAppContext | null>(null);
-  const [customMessage, setCustomMessage] = useState("");
   const [ethUsdPrice, setEthUsdPrice] = useState<number>(3500);
-  const [glazeResult, setGlazeResult] = useState<"success" | "failure" | null>(
-    null,
-  );
-  const [isMuted, setIsMuted] = useState(true);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const glazeResultTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const resetGlazeResult = useCallback(() => {
-    if (glazeResultTimeoutRef.current) {
-      clearTimeout(glazeResultTimeoutRef.current);
-      glazeResultTimeoutRef.current = null;
-    }
-    setGlazeResult(null);
-  }, []);
-  const showGlazeResult = useCallback(
-    (result: "success" | "failure") => {
-      if (glazeResultTimeoutRef.current) {
-        clearTimeout(glazeResultTimeoutRef.current);
-      }
-      setGlazeResult(result);
-      glazeResultTimeoutRef.current = setTimeout(() => {
-        setGlazeResult(null);
-        glazeResultTimeoutRef.current = null;
-      }, 3000);
-    },
-    [],
-  );
+
+  // Global spin state from blockchain events
+  const { isGlobalSpinning, lastWin, showWinResult } = useGlobalSpin();
+
+  // Local spin state management (for the user's own transaction)
+  const [localSpinState, setLocalSpinState] = useState<SpinState>('idle');
+  const [pendingEpochId, setPendingEpochId] = useState<bigint | null>(null);
+
+  // Combined spinning state: either global (from blockchain) or local (user's tx pending)
+  const isSpinning = isGlobalSpinning || localSpinState === 'pending' || localSpinState === 'confirming' || localSpinState === 'waiting_vrf';
+
+  // Display symbols - show last win symbol (persists until next spin starts)
+  // When spinning, symbol is null so reels animate randomly
+  // When not spinning, show the last winning symbol
+  const displaySymbol: GlobalSlotSymbol | null = isSpinning ? null : (lastWin?.symbol ?? null);
+
+  // VRF timeout ref
+  const vrfTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const balancePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const preSpinBalanceRef = useRef<bigint | null>(null);
+
+  // Prize pool interpolation
+  const [interpolatedPrizePool, setInterpolatedPrizePool] = useState<bigint | null>(null);
+
+  // ============================================
+  // SDK INITIALIZATION
+  // ============================================
 
   useEffect(() => {
     let cancelled = false;
@@ -150,14 +315,6 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (glazeResultTimeoutRef.current) {
-        clearTimeout(glazeResultTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     const timeout = setTimeout(() => {
       if (!readyRef.current) {
         readyRef.current = true;
@@ -167,18 +324,28 @@ export default function HomePage() {
     return () => clearTimeout(timeout);
   }, []);
 
-  // Fetch ETH price on mount and every minute
+  // Fetch ETH price
   useEffect(() => {
     const fetchPrice = async () => {
       const price = await getEthPrice();
       setEthUsdPrice(price);
     };
-
     fetchPrice();
-    const interval = setInterval(fetchPrice, 60_000); // Update every minute
-
+    const interval = setInterval(fetchPrice, 60_000);
     return () => clearInterval(interval);
   }, []);
+
+  // Cleanup timeouts and intervals
+  useEffect(() => {
+    return () => {
+      if (vrfTimeoutRef.current) clearTimeout(vrfTimeoutRef.current);
+      if (balancePollRef.current) clearInterval(balancePollRef.current);
+    };
+  }, []);
+
+  // ============================================
+  // WALLET CONNECTION
+  // ============================================
 
   const { address, isConnected } = useAccount();
   const { connectors, connectAsync, isPending: isConnecting } = useConnect();
@@ -197,15 +364,17 @@ export default function HomePage() {
     connectAsync({
       connector: primaryConnector,
       chainId: base.id,
-    }).catch(() => {
-      // Ignore auto-connect failures; user can connect manually.
-    });
+    }).catch(() => {});
   }, [connectAsync, isConnected, isConnecting, primaryConnector]);
 
-  const { data: rawMinerState, refetch: refetchMinerState } = useReadContract({
-    address: CONTRACT_ADDRESSES.multicall,
+  // ============================================
+  // CONTRACT READS
+  // ============================================
+
+  const { data: rawRigState, refetch: refetchRigState } = useReadContract({
+    address: CONTRACT_ADDRESSES.multicall as Address,
     abi: MULTICALL_ABI,
-    functionName: "getMiner",
+    functionName: "getRig",
     args: [address ?? zeroAddress],
     chainId: base.id,
     query: {
@@ -213,19 +382,58 @@ export default function HomePage() {
     },
   });
 
-  const minerState = useMemo(() => {
-    if (!rawMinerState) return undefined;
-    return rawMinerState as unknown as MinerState;
-  }, [rawMinerState]);
+  const rigState = useMemo(() => {
+    if (!rawRigState) return undefined;
+    return rawRigState as unknown as RigState;
+  }, [rawRigState]);
 
-  const { data: accountData } = useAccountData(address);
+  const { data: entropyFee } = useReadContract({
+    address: CONTRACT_ADDRESSES.multicall as Address,
+    abi: MULTICALL_ABI,
+    functionName: "getEntropyFee",
+    chainId: base.id,
+    query: {
+      refetchInterval: 30_000,
+    },
+  });
 
   useEffect(() => {
-    if (!readyRef.current && minerState) {
+    if (!readyRef.current && rigState) {
       readyRef.current = true;
       sdk.actions.ready().catch(() => {});
     }
-  }, [minerState]);
+  }, [rigState]);
+
+  // ============================================
+  // PRIZE POOL INTERPOLATION
+  // ============================================
+
+  useEffect(() => {
+    if (!rigState) {
+      setInterpolatedPrizePool(null);
+      return;
+    }
+
+    // Start with fetched value + pending emissions
+    const totalPool = rigState.prizePool + rigState.pendingEmissions;
+    setInterpolatedPrizePool(totalPool);
+
+    // Update every second with interpolated value based on ups
+    const interval = setInterval(() => {
+      if (rigState.ups > 0n) {
+        setInterpolatedPrizePool((prev) => {
+          if (!prev) return totalPool;
+          return prev + rigState.ups;
+        });
+      }
+    }, 1_000);
+
+    return () => clearInterval(interval);
+  }, [rigState]);
+
+  // ============================================
+  // TRANSACTION HANDLING
+  // ============================================
 
   const {
     data: txHash,
@@ -242,59 +450,44 @@ export default function HomePage() {
     chainId: base.id,
   });
 
-  useEffect(() => {
-    if (!receipt) return;
-    if (receipt.status === "success" || receipt.status === "reverted") {
-      showGlazeResult(
-        receipt.status === "success" ? "success" : "failure",
-      );
-      refetchMinerState();
-      const resetTimer = setTimeout(() => {
-        resetWrite();
-      }, 500);
-      return () => clearTimeout(resetTimer);
-    }
-    return;
-  }, [receipt, refetchMinerState, resetWrite, showGlazeResult]);
+  // ============================================
+  // VRF EVENT WATCHING
+  // ============================================
 
-  const minerAddress = minerState?.miner ?? zeroAddress;
-  const hasMiner = minerAddress !== zeroAddress;
+  // Note: Event watching is unreliable in some environments, so we use balance polling as primary detection
+  // This event watcher is kept as a faster detection method when it works
+  useWatchContractEvent({
+    address: CONTRACT_ADDRESSES.rig as Address,
+    abi: RIG_ABI,
+    eventName: 'Rig__Win',
+    chainId: base.id,
+    onLogs(logs) {
+      for (const log of logs) {
+        const { spinner } = log.args as {
+          spinner: Address;
+          epochId: bigint;
+          oddsPercent: bigint;
+          amount: bigint;
+        };
 
-  const claimedHandleParam = (minerState?.uri ?? "").trim();
-
-  const { data: neynarUser } = useQuery<{
-    user: {
-      fid: number | null;
-      username: string | null;
-      displayName: string | null;
-      pfpUrl: string | null;
-    } | null;
-  }>({
-    queryKey: ["neynar-user", minerAddress],
-    queryFn: async () => {
-      const res = await fetch(
-        `/api/neynar/user?address=${encodeURIComponent(minerAddress)}`,
-      );
-      if (!res.ok) {
-        throw new Error("Failed to load Farcaster profile.");
+        // Check if this win is for our address
+        if (spinner?.toLowerCase() === address?.toLowerCase() && localSpinState === 'waiting_vrf') {
+          console.log('Win detected via event for current user');
+          handleWinDetected();
+          break;
+        }
       }
-      return (await res.json()) as {
-        user: {
-          fid: number | null;
-          username: string | null;
-          displayName: string | null;
-          pfpUrl: string | null;
-        } | null;
-      };
     },
-    enabled: hasMiner,
-    staleTime: 60_000,
-    retry: false,
+    enabled: localSpinState === 'waiting_vrf' && !!address,
   });
 
-  const handleGlaze = useCallback(async () => {
-    if (!minerState) return;
-    resetGlazeResult();
+  // ============================================
+  // SPIN HANDLER
+  // ============================================
+
+  const handleSpin = useCallback(async () => {
+    if (!rigState || localSpinState !== 'idle') return;
+
     try {
       let targetAddress = address;
       if (!targetAddress) {
@@ -310,634 +503,345 @@ export default function HomePage() {
       if (!targetAddress) {
         throw new Error("Unable to determine wallet address.");
       }
-      const price = minerState.price;
-      const epochId = toBigInt(minerState.epochId);
+
+      setLocalSpinState('pending');
+
+      // Store pre-spin balance for fallback detection
+      preSpinBalanceRef.current = rigState.unitBalance;
+
+      const price = rigState.price;
+      const epochId = toBigInt(rigState.epochId);
       const deadline = BigInt(
         Math.floor(Date.now() / 1000) + DEADLINE_BUFFER_SECONDS,
       );
       const maxPrice = price === 0n ? 0n : (price * 105n) / 100n;
+
+      // Calculate total value: spin price + entropy fee
+      const fee = entropyFee ?? 0n;
+      const totalValue = price + fee;
+
+      setPendingEpochId(epochId);
+
       await writeContract({
         account: targetAddress as Address,
         address: CONTRACT_ADDRESSES.multicall as Address,
         abi: MULTICALL_ABI,
-        functionName: "mine",
-        args: [
-          targetAddress as Address, // Miner gets the 5% provider fee as a rebate
-          epochId,
-          deadline,
-          maxPrice,
-          customMessage.trim() || "We Glaze The World",
-        ],
-        value: price,
+        functionName: "spin",
+        args: [epochId, deadline, maxPrice],
+        value: totalValue,
         chainId: base.id,
       });
+
+      setLocalSpinState('confirming');
     } catch (error) {
-      console.error("Failed to glaze:", error);
-      showGlazeResult("failure");
+      console.error("Spin failed:", error);
+      setLocalSpinState('idle');
       resetWrite();
     }
   }, [
     address,
     connectAsync,
-    customMessage,
-    minerState,
+    entropyFee,
     primaryConnector,
-    resetGlazeResult,
     resetWrite,
-    showGlazeResult,
+    rigState,
+    localSpinState,
     writeContract,
   ]);
 
-  // Local state for smooth glazed counter interpolation
-  const [interpolatedGlazed, setInterpolatedGlazed] = useState<bigint | null>(null);
+  // Helper to handle detected win (simplified - global hook handles display)
+  const handleWinDetected = useCallback(() => {
+    // Clear all pending timeouts/intervals
+    if (vrfTimeoutRef.current) {
+      clearTimeout(vrfTimeoutRef.current);
+      vrfTimeoutRef.current = null;
+    }
+    if (balancePollRef.current) {
+      clearInterval(balancePollRef.current);
+      balancePollRef.current = null;
+    }
 
-  // Local state for glaze time tracking
-  const [glazeElapsedSeconds, setGlazeElapsedSeconds] = useState<number>(0);
+    setLocalSpinState('idle');
+    preSpinBalanceRef.current = null;
+    refetchRigState();
+    resetWrite();
+  }, [refetchRigState, resetWrite]);
 
-  // Update interpolated glazed amount smoothly between fetches
+  // Handle transaction receipt
   useEffect(() => {
-    if (!minerState) {
-      setInterpolatedGlazed(null);
+    if (!receipt) return;
+
+    if (receipt.status === "success") {
+      setLocalSpinState('waiting_vrf');
+
+      // Set VRF timeout
+      vrfTimeoutRef.current = setTimeout(() => {
+        // Clear balance polling
+        if (balancePollRef.current) {
+          clearInterval(balancePollRef.current);
+          balancePollRef.current = null;
+        }
+        setLocalSpinState('idle');
+        preSpinBalanceRef.current = null;
+        resetWrite();
+        refetchRigState();
+      }, VRF_TIMEOUT_MS);
+
+      // Start balance polling as fallback for event detection
+      balancePollRef.current = setInterval(() => {
+        refetchRigState();
+      }, BALANCE_POLL_INTERVAL_MS);
+
+    } else if (receipt.status === "reverted") {
+      setLocalSpinState('idle');
+      preSpinBalanceRef.current = null;
+      resetWrite();
+    }
+  }, [receipt, refetchRigState, resetWrite]);
+
+  // Balance change detection (fallback when event watching fails)
+  useEffect(() => {
+    if (localSpinState !== 'waiting_vrf' || !rigState || preSpinBalanceRef.current === null) {
       return;
     }
 
-    // Start with the fetched value
-    setInterpolatedGlazed(minerState.glazed);
+    const preBalance = preSpinBalanceRef.current;
+    const currentBalance = rigState.unitBalance;
 
-    // Update every second with interpolated value
-    const interval = setInterval(() => {
-      if (minerState.nextDps > 0n) {
-        setInterpolatedGlazed((prev) => {
-          if (!prev) return minerState.glazed;
-          return prev + minerState.nextDps;
-        });
-      }
-    }, 1_000);
-
-    return () => clearInterval(interval);
-  }, [minerState]);
-
-  // Update glaze elapsed time every second
-  useEffect(() => {
-    if (!minerState) {
-      setGlazeElapsedSeconds(0);
-      return;
+    // Check if balance increased (indicating a win)
+    if (currentBalance > preBalance) {
+      console.log('Win detected via balance change');
+      handleWinDetected();
     }
+  }, [localSpinState, rigState, handleWinDetected]);
 
-    // Calculate initial elapsed time
-    const startTimeSeconds = Number(minerState.startTime);
-    const initialElapsed = Math.floor(Date.now() / 1000) - startTimeSeconds;
-    setGlazeElapsedSeconds(initialElapsed);
+  // ============================================
+  // COMPUTED VALUES
+  // ============================================
 
-    // Update every second
-    const interval = setInterval(() => {
-      const currentElapsed = Math.floor(Date.now() / 1000) - startTimeSeconds;
-      setGlazeElapsedSeconds(currentElapsed);
-    }, 1_000);
-
-    return () => clearInterval(interval);
-  }, [minerState]);
-
-  const occupantDisplay = useMemo(() => {
-    if (!minerState) {
-      return {
-        primary: "—",
-        secondary: "",
-        isYou: false,
-        avatarUrl: null as string | null,
-        isUnknown: true,
-        addressLabel: "—",
-      };
-    }
-    const minerAddr = minerState.miner;
-    const fallback = formatAddress(minerAddr);
-    const isYou =
-      !!address &&
-      minerAddr.toLowerCase() === (address as string).toLowerCase();
-
-    const fallbackAvatarUrl = `https://api.dicebear.com/7.x/shapes/svg?seed=${encodeURIComponent(
-      minerAddr.toLowerCase(),
-    )}`;
-
-    const profile = neynarUser?.user ?? null;
-    const profileUsername = profile?.username
-      ? `@${profile.username}`
-      : null;
-    const profileDisplayName = profile?.displayName ?? null;
-
-    const contextProfile = context?.user ?? null;
-    const contextHandle = contextProfile?.username
-      ? `@${contextProfile.username}`
-      : null;
-    const contextDisplayName = contextProfile?.displayName ?? null;
-
-    const claimedHandle = claimedHandleParam
-      ? claimedHandleParam.startsWith("@")
-        ? claimedHandleParam
-        : `@${claimedHandleParam}`
-      : null;
-
-    const addressLabel = fallback;
-
-    const labelCandidates = [
-      profileDisplayName,
-      profileUsername,
-      isYou ? contextDisplayName : null,
-      isYou ? contextHandle : null,
-      addressLabel,
-    ].filter((label): label is string => !!label);
-
-    const seenLabels = new Set<string>();
-    const uniqueLabels = labelCandidates.filter((label) => {
-      const key = label.toLowerCase();
-      if (seenLabels.has(key)) return false;
-      seenLabels.add(key);
-      return true;
-    });
-
-    const primary = uniqueLabels[0] ?? addressLabel;
-
-    const secondary =
-      uniqueLabels.find(
-        (label) => label !== primary && label.startsWith("@"),
-      ) ?? "";
-
-    const avatarUrl =
-      profile?.pfpUrl ??
-      (isYou ? contextProfile?.pfpUrl ?? null : null) ??
-      fallbackAvatarUrl;
-
-    const isUnknown =
-      !profile && !claimedHandle && !(isYou && (contextHandle || contextDisplayName));
-
-    return {
-      primary,
-      secondary,
-      isYou,
-      avatarUrl,
-      isUnknown,
-      addressLabel,
-    };
-  }, [
-    address,
-    claimedHandleParam,
-    context?.user?.displayName,
-    context?.user?.pfpUrl,
-    context?.user?.username,
-    minerState,
-    neynarUser?.user,
-  ]);
-
-  const glazeRateDisplay = minerState
-    ? formatTokenAmount(minerState.nextDps, DONUT_DECIMALS, 4)
-    : "—";
-  const glazePriceDisplay = minerState
-    ? `Ξ${formatEth(minerState.price, minerState.price === 0n ? 0 : 5)}`
-    : "Ξ—";
-  const glazeNetPriceDisplay = minerState
-    ? `Ξ${formatEth((minerState.price * 95n) / 100n, minerState.price === 0n ? 0 : 5)}`
-    : "Ξ—";
-  const glazedDisplay = minerState && interpolatedGlazed !== null
-    ? `🍩${formatTokenAmount(interpolatedGlazed, DONUT_DECIMALS, 2)}`
-    : "🍩—";
-
-  // Format glaze elapsed time with units
-  const formatGlazeTime = (seconds: number): string => {
-    if (seconds < 0) return "0s";
-
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-
-    if (hours > 0) {
-      return `${hours}h ${minutes}m ${secs}s`;
-    }
-    if (minutes > 0) {
-      return `${minutes}m ${secs}s`;
-    }
-    return `${secs}s`;
-  };
-
-  const glazeTimeDisplay = minerState
-    ? formatGlazeTime(glazeElapsedSeconds)
+  const prizePoolDisplay = interpolatedPrizePool !== null
+    ? formatTokenAmount(interpolatedPrizePool, DOTARD_DECIMALS, 2)
     : "—";
 
-  // Calculate USD values for donuts
-  const glazedUsdValue = minerState && minerState.donutPrice > 0n && interpolatedGlazed !== null
-    ? (Number(formatEther(interpolatedGlazed)) * Number(formatEther(minerState.donutPrice)) * ethUsdPrice).toFixed(2)
+  // Calculate prize pool USD using hardcoded DOTARD price
+  const prizePoolUsd = interpolatedPrizePool !== null
+    ? Number(formatUnits(interpolatedPrizePool, DOTARD_DECIMALS)) * DOTARD_PRICE_USD
+    : 0;
+
+  const jackpotAmount = interpolatedPrizePool !== null
+    ? interpolatedPrizePool / 2n
+    : 0n;
+
+  const jackpotDisplay = jackpotAmount > 0n
+    ? formatTokenAmount(jackpotAmount, DOTARD_DECIMALS, 2)
+    : "—";
+
+  // Jackpot USD using hardcoded price
+  const jackpotUsdDisplay = jackpotAmount > 0n
+    ? (Number(formatUnits(jackpotAmount, DOTARD_DECIMALS)) * DOTARD_PRICE_USD).toFixed(2)
     : "0.00";
 
-  const glazeRateUsdValue = minerState && minerState.donutPrice > 0n
-    ? (Number(formatUnits(minerState.nextDps, DONUT_DECIMALS)) * Number(formatEther(minerState.donutPrice)) * ethUsdPrice).toFixed(4)
-    : "0.0000";
+  // Minimum win (1% of pool)
+  const minWinAmount = interpolatedPrizePool !== null
+    ? interpolatedPrizePool / 100n
+    : 0n;
 
-  // Calculate PNL in USD
-  const pnlUsdValue = minerState
-    ? (() => {
-        const pnl = (minerState.price * 80n) / 100n - minerState.initPrice / 2n;
-        const pnlEth = Number(formatEther(pnl >= 0n ? pnl : -pnl));
-        const pnlUsd = pnlEth * ethUsdPrice;
-        const sign = pnl >= 0n ? "+" : "-";
-        return `${sign}$${pnlUsd.toFixed(2)}`;
-      })()
-    : "$0.00";
+  const minWinDisplay = minWinAmount > 0n
+    ? formatTokenAmount(minWinAmount, DOTARD_DECIMALS, 2)
+    : "—";
 
-  const occupantInitialsSource = occupantDisplay.isUnknown
-    ? occupantDisplay.addressLabel
-    : occupantDisplay.primary || occupantDisplay.addressLabel;
+  const minWinUsd = minWinAmount > 0n
+    ? (Number(formatUnits(minWinAmount, DOTARD_DECIMALS)) * DOTARD_PRICE_USD).toFixed(2)
+    : "0.00";
 
-  const occupantFallbackInitials = occupantDisplay.isUnknown
-    ? (occupantInitialsSource?.slice(-2) ?? "??").toUpperCase()
-    : initialsFrom(occupantInitialsSource);
+  const spinPriceDisplay = rigState
+    ? `Ξ${formatEth(rigState.price, 6)}`
+    : "Ξ—";
 
-  const donutBalanceDisplay =
-    minerState && minerState.donutBalance !== undefined
-      ? formatTokenAmount(minerState.donutBalance, DONUT_DECIMALS, 2)
-      : "—";
-  const ethBalanceDisplay =
-    minerState && minerState.ethBalance !== undefined
-      ? formatEth(minerState.ethBalance, 4)
-      : "—";
+  const spinPriceUsdDisplay = rigState
+    ? (Number(formatEther(rigState.price)) * ethUsdPrice).toFixed(2)
+    : "0.00";
+
+  const upsDisplay = rigState
+    ? formatTokenAmount(rigState.ups, DOTARD_DECIMALS, 4)
+    : "—";
+
+  const userBalanceDisplay = rigState
+    ? formatTokenAmount(rigState.unitBalance, DOTARD_DECIMALS, 2)
+    : "—";
+
+  const userBalanceUsd = rigState
+    ? (Number(formatUnits(rigState.unitBalance, DOTARD_DECIMALS)) * DOTARD_PRICE_USD).toFixed(2)
+    : "0.00";
+
+  const ethBalanceDisplay = rigState
+    ? formatEth(rigState.ethBalance, 4)
+    : "—";
 
   const buttonLabel = useMemo(() => {
-    if (!minerState) return "Loading…";
-    if (glazeResult === "success") return "SUCCESS";
-    if (glazeResult === "failure") return "FAILURE";
-    if (isWriting || isConfirming) {
-      return "GLAZING…";
-    }
-    return "GLAZE";
-  }, [glazeResult, isConfirming, isWriting, minerState]);
+    if (!rigState) return "Loading...";
+    if (localSpinState === 'pending') return "SPINNING...";
+    if (localSpinState === 'confirming') return "CONFIRMING...";
+    if (localSpinState === 'waiting_vrf') return "WAITING...";
+    return "SPIN";
+  }, [rigState, localSpinState]);
 
-  const isGlazeDisabled =
-    !minerState || isWriting || isConfirming || glazeResult !== null;
-
-  const handleViewKingGlazerProfile = useCallback(() => {
-    const fid = neynarUser?.user?.fid;
-    const username = neynarUser?.user?.username;
-    console.log("King Glazer clicked, FID:", fid, "Username:", username);
-
-    if (username) {
-      // Open Farcaster profile URL using username (cleaner URL)
-      window.open(`https://warpcast.com/${username}`, "_blank", "noopener,noreferrer");
-    } else if (fid) {
-      // Fallback to FID-based URL if username not available
-      window.open(`https://warpcast.com/~/profiles/${fid}`, "_blank", "noopener,noreferrer");
-    } else {
-      console.log("No FID or username available for King Glazer");
-    }
-  }, [neynarUser?.user?.fid, neynarUser?.user?.username]);
-
-  const userDisplayName =
-    context?.user?.displayName ?? context?.user?.username ?? "Farcaster user";
-  const userHandle = context?.user?.username
-    ? `@${context.user.username}`
-    : context?.user?.fid
-      ? `fid ${context.user.fid}`
-      : "";
-  const userAvatarUrl = context?.user?.pfpUrl ?? null;
+  const isSpinDisabled =
+    !rigState ||
+    localSpinState !== 'idle' ||
+    isWriting ||
+    isConfirming ||
+    isGlobalSpinning ||
+    (rigState && rigState.ethBalance < rigState.price);
 
   return (
     <main className="flex h-screen w-screen justify-center overflow-hidden bg-black font-mono text-white">
-      {/* Add to Farcaster Dialog - shows on first visit */}
-      <AddToFarcasterDialog showOnFirstVisit={true} />
-
       <div
         className="relative flex h-full w-full max-w-[520px] flex-1 flex-col overflow-hidden rounded-[28px] bg-black px-2 pb-4 shadow-inner"
         style={{
           paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)",
-          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 80px)",
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 100px)",
         }}
       >
         <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold tracking-wide">GLAZERY</h1>
-            {context?.user ? (
-              <div className="flex items-center gap-2 rounded-full bg-black px-3 py-1">
-                <Avatar className="h-8 w-8 border border-zinc-800">
-                  <AvatarImage
-                    src={userAvatarUrl || undefined}
-                    alt={userDisplayName}
-                    className="object-cover"
-                  />
-                  <AvatarFallback className="bg-zinc-800 text-white">
-                    {initialsFrom(userDisplayName)}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="leading-tight text-left">
-                  <div className="text-sm font-bold">{userDisplayName}</div>
-                  {userHandle ? (
-                    <div className="text-xs text-gray-400">{userHandle}</div>
-                  ) : null}
-                </div>
+          {/* Header - Jackpot left, Min Win right */}
+          <div className="flex items-start justify-between gap-2 mb-2">
+            {/* Jackpot - Top Left */}
+            <div className={cn(
+              "flex-1 rounded-lg py-1.5 px-2",
+              showWinResult && lastWin?.symbol.tier === 'jackpot'
+                ? "animate-jackpot"
+                : "bg-gradient-to-br from-yellow-600 to-yellow-500"
+            )}>
+              <div className="text-[9px] font-bold text-black/70 tracking-wider">
+                JACKPOT (50%)
               </div>
-            ) : null}
-          </div>
-
-          <Card
-            className={cn(
-              "mt-1 border-zinc-800 bg-gradient-to-br from-zinc-950 to-black transition-shadow rounded-xl",
-              occupantDisplay.isYou &&
-                "border-pink-500 shadow-[inset_0_0_24px_rgba(236,72,153,0.55)] animate-glow",
-            )}
-          >
-            <div className="px-2 py-1.5 flex items-center justify-between gap-2">
-              {/* Left Section: Title + Profile */}
-              <div className="flex flex-col gap-1 min-w-0 flex-1">
-                {/* King Glazer Title */}
-                <div
-                  className={cn(
-                    "text-[9px] font-bold uppercase tracking-[0.1em]",
-                    occupantDisplay.isYou
-                      ? "text-pink-400"
-                      : "text-gray-400",
-                  )}
-                >
-                  KING GLAZER
-                </div>
-
-                {/* Profile Section */}
-                <div
-                  className={cn(
-                    "flex items-center gap-2 min-w-0",
-                    neynarUser?.user?.fid && "cursor-pointer hover:opacity-80 transition-opacity"
-                  )}
-                  onClick={neynarUser?.user?.fid ? handleViewKingGlazerProfile : undefined}
-                >
-                <Avatar className="h-7 w-7 flex-shrink-0 ring-2 ring-zinc-800">
-                  <AvatarImage
-                    src={occupantDisplay.avatarUrl || undefined}
-                    alt={occupantDisplay.primary}
-                    className="object-cover"
-                  />
-                  <AvatarFallback className="bg-zinc-800 text-white text-xs uppercase">
-                    {minerState ? (
-                      occupantFallbackInitials
-                    ) : (
-                      <CircleUserRound className="h-4 w-4" />
-                    )}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="leading-tight text-left min-w-0 flex-1">
-                  <div className="flex items-center gap-1 text-[11px] font-semibold text-white truncate">
-                    <span className="truncate">{occupantDisplay.primary}</span>
-                  </div>
-                  {occupantDisplay.secondary ? (
-                    <div className="text-[9px] text-gray-400 truncate">
-                      {occupantDisplay.secondary}
-                    </div>
-                  ) : null}
-                </div>
-                </div>
+              <div className="text-lg font-black text-black leading-tight">
+                <DonutSymbol /> {jackpotDisplay}
               </div>
-
-              {/* Stats Section - Glazed and PNL stacked */}
-              <div className="flex flex-col gap-0.5 flex-shrink-0">
-                {/* Time Row */}
-                <div className="flex items-center gap-1">
-                  <div className="text-[7px] font-bold uppercase tracking-[0.08em] text-gray-400 w-9 text-right">
-                    TIME
-                  </div>
-                  <div className="text-[10px] font-semibold text-white">
-                    {glazeTimeDisplay}
-                  </div>
-                </div>
-
-                {/* Glazed Row */}
-                <div className="flex items-center gap-1">
-                  <div className="text-[7px] font-bold uppercase tracking-[0.08em] text-gray-400 w-9 text-right">
-                    GLAZED
-                  </div>
-                  <div className="text-[10px] font-semibold text-white">
-                    +{glazedDisplay}
-                  </div>
-                  <div className="text-[8px] text-gray-400">
-                    +${glazedUsdValue}
-                  </div>
-                </div>
-
-                {/* PNL Row */}
-                <div className="flex items-center gap-1">
-                  <div className="text-[7px] font-bold uppercase tracking-[0.08em] text-gray-400 w-9 text-right">
-                    PNL
-                  </div>
-                  <div className="text-[10px] font-semibold text-white">
-                    {minerState
-                      ? (() => {
-                          const pnl = (minerState.price * 80n) / 100n - minerState.initPrice / 2n;
-                          const sign = pnl >= 0n ? "+" : "-";
-                          const absolutePnl = pnl >= 0n ? pnl : -pnl;
-                          return `${sign}Ξ${formatEth(absolutePnl, 5)}`;
-                        })()
-                      : "Ξ—"}
-                  </div>
-                  <div className="text-[8px] text-gray-400">
-                    {pnlUsdValue}
-                  </div>
-                </div>
-
-                {/* Total Row */}
-                <div className="flex items-center gap-1">
-                  <div className="text-[7px] font-bold uppercase tracking-[0.08em] text-gray-400 w-9 text-right">
-                    TOTAL
-                  </div>
-                  <div className={cn(
-                    "text-[10px] font-semibold",
-                    minerState && (() => {
-                      const pnl = (minerState.price * 80n) / 100n - minerState.initPrice / 2n;
-                      const pnlEth = Number(formatEther(pnl >= 0n ? pnl : -pnl));
-                      const pnlUsd = pnlEth * ethUsdPrice * (pnl >= 0n ? 1 : -1);
-                      const glazedUsd = Number(glazedUsdValue);
-                      return (glazedUsd + pnlUsd) >= 0;
-                    })()
-                      ? "text-green-400"
-                      : "text-red-400"
-                  )}>
-                    {minerState
-                      ? (() => {
-                          const pnl = (minerState.price * 80n) / 100n - minerState.initPrice / 2n;
-                          const pnlEth = Number(formatEther(pnl >= 0n ? pnl : -pnl));
-                          const pnlUsd = pnlEth * ethUsdPrice * (pnl >= 0n ? 1 : -1);
-                          const glazedUsd = Number(glazedUsdValue);
-                          const total = glazedUsd + pnlUsd;
-                          const sign = total >= 0 ? "+" : "-";
-                          return `${sign}$${Math.abs(total).toFixed(2)}`;
-                        })()
-                      : "$—"}
-                  </div>
-                </div>
+              <div className="text-[10px] text-black/70">
+                ${jackpotUsdDisplay}
               </div>
             </div>
-          </Card>
 
-          <div className="relative mt-1 overflow-hidden bg-black">
-            <div className="flex animate-scroll whitespace-nowrap py-1 text-sm font-bold text-pink-500">
-              {Array.from({ length: 1000 }).map((_, i) => (
-                <span key={i} className="inline-block px-8">
-                  {minerState?.uri && minerState.uri.trim() !== ""
-                    ? minerState.uri
-                    : "We Glaze The World"}
-                </span>
-              ))}
+            {/* Min Win - Top Right */}
+            <div className="flex-1 text-right bg-zinc-900/50 rounded-lg py-1.5 px-2">
+              <div className="text-[9px] text-gray-400 tracking-wider">
+                MIN WIN (1%)
+              </div>
+              <div className="text-lg font-bold text-green-400 leading-tight">
+                <DonutSymbol /> {minWinDisplay}
+              </div>
+              <div className="text-[10px] text-gray-400">
+                ${minWinUsd}
+              </div>
             </div>
           </div>
 
-          <div className="mt-1 -mx-2 w-[calc(100%+1rem)] overflow-hidden relative">
-            <video
-              ref={videoRef}
-              className="w-full object-contain"
-              autoPlay
-              loop
-              muted={isMuted}
-              playsInline
-              preload="auto"
-              src="/media/donut-loop.mp4"
-            />
-            <button
-              onClick={() => setIsMuted(!isMuted)}
-              className="absolute bottom-3 right-3 p-2 rounded-full bg-black/60 hover:bg-black/80 transition-colors"
-              aria-label={isMuted ? "Unmute" : "Mute"}
-            >
-              {isMuted ? (
-                <VolumeOff className="w-5 h-5 text-white" />
-              ) : (
-                <Volume2 className="w-5 h-5 text-white" />
-              )}
-            </button>
+          {/* Slot Machine */}
+          <div className={cn(
+            "relative rounded-xl overflow-hidden",
+            "bg-zinc-900/50 border",
+            isSpinning ? "border-yellow-500/50" : "border-zinc-800/50",
+            showWinResult && "animate-win-shake"
+          )}>
+            {/* Reels */}
+            <div className="flex justify-center items-center gap-3 p-4">
+              <SlotReel
+                isSpinning={isSpinning}
+                isIdleSpin={true}
+                symbol={displaySymbol}
+                delay={0}
+                isWinning={showWinResult}
+                idleSpeed={0.035}
+                showResult={showWinResult}
+              />
+              <SlotReel
+                isSpinning={isSpinning}
+                isIdleSpin={true}
+                symbol={displaySymbol}
+                delay={100}
+                isWinning={showWinResult}
+                idleSpeed={0.045}
+                showResult={showWinResult}
+              />
+              <SlotReel
+                isSpinning={isSpinning}
+                isIdleSpin={true}
+                symbol={displaySymbol}
+                delay={200}
+                isWinning={showWinResult}
+                idleSpeed={0.055}
+                showResult={showWinResult}
+              />
+            </div>
           </div>
 
-          <div className="mt-1 flex flex-col gap-1.5 pb-1">
-            <div className="grid grid-cols-2 gap-1.5">
-              <Card className="border-zinc-800 bg-black">
-                <CardContent className="grid gap-0.5 p-2">
-                  <div className="text-[9px] font-bold uppercase tracking-[0.08em] text-gray-400">
-                    GLAZE RATE
-                  </div>
-                  <div className="flex items-baseline">
-                    <span className="text-base leading-none">🍩</span>
-                    <span className="text-xl font-semibold text-white">{glazeRateDisplay}</span>
-                    <span className="text-[10px] text-gray-400">/s</span>
-                  </div>
-                  <div className="text-[10px] text-gray-400">
-                    ${glazeRateUsdValue}/s
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="border-zinc-800 bg-black">
-                <CardContent className="grid gap-0.5 p-2">
-                  <div className="text-[9px] font-bold uppercase tracking-[0.08em] text-gray-400">
-                    GLAZE PRICE <span className="text-green-400">(5% REBATE)</span>
-                  </div>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-xl font-semibold text-pink-400">{glazeNetPriceDisplay}</span>
-                    <span className="text-xs text-gray-500 line-through">{glazePriceDisplay}</span>
-                  </div>
-                  <div className="text-[10px] text-gray-400">
-                    $
-                    {minerState
-                      ? (
-                          Number(formatEther((minerState.price * 95n) / 100n)) * ethUsdPrice
-                        ).toFixed(2)
-                      : "0.00"}
-                  </div>
-                </CardContent>
-              </Card>
+          {/* Prize Pool and Spin Price */}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="bg-zinc-900/50 rounded-lg py-2 px-3">
+              <div className="flex justify-between items-center">
+                <div className="text-[10px] text-gray-400 tracking-wider">
+                  PRIZE POOL
+                </div>
+                <div className="text-[10px] text-green-400">
+                  +{upsDisplay}/sec
+                </div>
+              </div>
+              <div className="text-lg font-bold text-white">
+                <DonutSymbol /> {prizePoolDisplay}
+              </div>
+              <div className="text-xs text-gray-400">
+                ${prizePoolUsd.toFixed(2)}
+              </div>
             </div>
+            <div className="bg-zinc-900/50 rounded-lg py-2 px-3 text-right">
+              <div className="text-[10px] text-gray-400 tracking-wider">
+                SPIN PRICE
+              </div>
+              <div className="text-lg font-bold text-yellow-400">
+                {spinPriceDisplay}
+              </div>
+              <div className="text-xs text-gray-400">
+                ${spinPriceUsdDisplay}
+              </div>
+            </div>
+          </div>
 
-            <input
-              type="text"
-              value={customMessage}
-              onChange={(e) => setCustomMessage(e.target.value)}
-              placeholder="Add a message (optional)"
-              maxLength={100}
-              className="w-full rounded-lg border border-zinc-800 bg-black px-2.5 py-1.5 text-xs font-mono text-white placeholder-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={isGlazeDisabled}
-            />
-
+          {/* Spin Button */}
+          <div className="mt-3">
             <Button
-              className="w-full rounded-2xl bg-pink-500 py-2 text-sm font-bold text-black shadow-lg transition-colors hover:bg-pink-400 disabled:cursor-not-allowed disabled:bg-pink-500/40"
-              onClick={handleGlaze}
-              disabled={isGlazeDisabled}
+              className={cn(
+                "w-full rounded-2xl py-4 text-lg font-black shadow-lg transition-all",
+                localSpinState !== 'idle'
+                    ? "bg-zinc-700 text-zinc-400"
+                    : "animate-gradient text-black hover:scale-[1.02]",
+                "disabled:cursor-not-allowed disabled:opacity-50"
+              )}
+              onClick={handleSpin}
+              disabled={isSpinDisabled}
             >
               {buttonLabel}
             </Button>
-          </div>
 
-          <div className="mt-auto px-2 pb-1">
-            <div className="mb-0.5 text-[11px] uppercase tracking-wide text-gray-400">
-              Your Balances
-            </div>
-
-            <div className="flex justify-between">
-              {/* Left Column - Donut Balance & Mined */}
-              <div className="flex flex-col gap-0.5 items-start">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
-                  <span>🍩</span>
-                  <span>{donutBalanceDisplay}</span>
-                </div>
-                <div className="flex flex-col items-start text-[11px]">
-                  <span className="text-gray-400 mb-0">Mined</span>
-                  <div className="flex items-center gap-1">
-                    <span>🍩</span>
-                    <span className="font-semibold">
-                      {address && accountData?.mined
-                        ? Number(accountData.mined).toLocaleString(undefined, {
-                            maximumFractionDigits: 2,
-                          })
-                        : "0"}
-                    </span>
-                  </div>
-                </div>
+            {/* Balances under spin button - DOTARD left, ETH right */}
+            <div className="mt-2 flex justify-between items-center text-xs">
+              <div className="text-left">
+                <span className="text-gray-500">Your </span>
+                <span className="text-orange-400 font-bold"><DonutSymbol /> {userBalanceDisplay}</span>
               </div>
-
-              {/* Middle Column - ETH Balance & Spent */}
-              <div className="flex flex-col gap-0.5 items-start">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
-                  <span>Ξ</span>
-                  <span>{ethBalanceDisplay}</span>
-                </div>
-                <div className="flex flex-col items-start text-[11px]">
-                  <span className="text-gray-400 mb-0">Spent</span>
-                  <div className="flex items-center gap-1">
-                    <span>Ξ</span>
-                    <span className="font-semibold">
-                      {address && accountData?.spent
-                        ? Number(accountData.spent).toLocaleString(undefined, {
-                            maximumFractionDigits: 4,
-                          })
-                        : "0"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right Column - WETH Balance & Earned */}
-              <div className="flex flex-col gap-0.5 items-start">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
-                  <span>wΞ</span>
-                  <span>
-                    {minerState && minerState.wethBalance !== undefined
-                      ? formatEth(minerState.wethBalance, 4)
-                      : "—"}
-                  </span>
-                </div>
-                <div className="flex flex-col items-start text-[11px]">
-                  <span className="text-gray-400 mb-0">Earned</span>
-                  <div className="flex items-center gap-1">
-                    <span>wΞ</span>
-                    <span className="font-semibold">
-                      {address && accountData?.earned
-                        ? Number(accountData.earned).toLocaleString(undefined, {
-                            maximumFractionDigits: 4,
-                          })
-                        : "0"}
-                    </span>
-                  </div>
-                </div>
+              <div className="text-right">
+                <span className="text-gray-500">Your </span>
+                <span className="text-white font-bold">Ξ{ethBalanceDisplay}</span>
+                {rigState && rigState.ethBalance < rigState.price && (
+                  <span className="text-red-400 ml-1">(Low)</span>
+                )}
               </div>
             </div>
           </div>
+
+          {/* Global Activity Feed */}
+          <ActivityFeed />
         </div>
       </div>
       <NavBar />

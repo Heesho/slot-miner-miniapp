@@ -1,31 +1,32 @@
 {
   "accountAssociation": {
     "header": "eyJmaWQiOjI3MjEwOSwidHlwZSI6ImF1dGgiLCJrZXkiOiIweDQ5REI1QTFjOWZlRjBFMkY5OTVCNDZiMEI3MWJFQmJEOTEyQkYwZTMifQ",
-    "payload": "eyJkb21haW4iOiJnbGF6ZWNvcnAudmVyY2VsLmFwcCJ9",
+    "payload": "eyJkb21haW4iOiJzbG90LW1pbmVyLnZlcmNlbC5hcHAifQ",
     "signature": "Xun297i8tZiQWxuVqo5bKPxSOs1CFDa1lFzDY4dJgOYJ7l16eBnWCJSxwqrgKnR0t74OmCHW7eg5HtIHMz+NZBs="
   },
   "miniapp": {
     "version": "1",
-    "name": "GlazeCorp",
-    "tagline": "Together we glaze the world",
-    "description": "Command GlazeCorp's donut mine, compete for control, and keep the rewards flowing on Base.",
-    "iconUrl": "https://glazecorp.vercel.app/media/icon.png",
-    "homeUrl": "https://glazecorp.vercel.app/",
-    "splashImageUrl": "https://glazecorp.vercel.app/media/splash.png",
-    "splashBackgroundColor": "#FEE7EC",
-    "heroImageUrl": "https://glazecorp.vercel.app/media/hero.png",
-    "buttonTitle": "We Glaze The World",
-    "ogTitle": "We Glaze The World",
-    "ogDescription": "Race the rink to seize the donut mine and keep the glaze flowing.",
-    "ogImageUrl": "https://glazecorp.vercel.app/media/hero.png",
+    "name": "Donutardio",
+    "tagline": "Spin to win DOTARD tokens!",
+    "description": "Vegas-style slot machine on Base. Spin the reels and win DOTARD tokens from the ever-growing prize pool!",
+    "iconUrl": "https://slot-miner.vercel.app/media/icon.png",
+    "homeUrl": "https://slot-miner.vercel.app/",
+    "splashImageUrl": "https://slot-miner.vercel.app/media/splash.png",
+    "splashBackgroundColor": "#000000",
+    "heroImageUrl": "https://slot-miner.vercel.app/media/hero.png",
+    "buttonTitle": "Spin to Win!",
+    "ogTitle": "Donutardio - Spin to Win!",
+    "ogDescription": "Vegas-style slot machine on Base. Spin the reels and win DOTARD tokens!",
+    "ogImageUrl": "https://slot-miner.vercel.app/media/hero.png",
     "requiredChains": [
       "eip155:8453"
     ],
-    "primaryCategory": "finance",
+    "primaryCategory": "gaming",
     "tags": [
       "gaming",
       "base",
-      "rewards"
+      "slots",
+      "casino"
     ],
     "actions": [
       "viewProfile"

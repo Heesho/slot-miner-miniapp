@@ -14,6 +14,242 @@ body {
   overflow: hidden;
 }
 
+/* ========================================
+   SLOT MACHINE ANIMATIONS (Vegas Style)
+   ======================================== */
+
+/* Neon glow effect for machine frame */
+@keyframes neon-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 5px #ec4899,
+      0 0 10px #ec4899,
+      0 0 20px #ec4899,
+      inset 0 0 10px rgba(236, 72, 153, 0.3);
+  }
+  50% {
+    box-shadow:
+      0 0 10px #fbbf24,
+      0 0 20px #fbbf24,
+      0 0 40px #fbbf24,
+      inset 0 0 15px rgba(251, 191, 36, 0.4);
+  }
+}
+
+.animate-neon {
+  animation: neon-pulse 2s ease-in-out infinite;
+}
+
+/* Reel spinning animation - continuous */
+@keyframes reel-spin {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-100%);
+  }
+}
+
+.animate-reel-spin {
+  animation: reel-spin 0.08s linear infinite;
+}
+
+/* Slower spin for winding down effect */
+.animate-reel-spin-slow {
+  animation: reel-spin 0.2s linear infinite;
+}
+
+/* Landing bounce animation */
+@keyframes reel-land {
+  0% {
+    transform: translateY(-20px);
+  }
+  50% {
+    transform: translateY(5px);
+  }
+  75% {
+    transform: translateY(-2px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+.animate-reel-land {
+  animation: reel-land 0.4s ease-out forwards;
+}
+
+/* Win shake animation */
+@keyframes win-shake {
+  0%, 100% {
+    transform: translateX(0) rotate(0deg);
+  }
+  10%, 30%, 50%, 70%, 90% {
+    transform: translateX(-4px) rotate(-1deg);
+  }
+  20%, 40%, 60%, 80% {
+    transform: translateX(4px) rotate(1deg);
+  }
+}
+
+.animate-win-shake {
+  animation: win-shake 0.6s ease-in-out;
+}
+
+/* Jackpot flash animation */
+@keyframes jackpot-flash {
+  0%, 100% {
+    background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+    transform: scale(1);
+  }
+  25% {
+    background: linear-gradient(135deg, #fff 0%, #fbbf24 100%);
+    transform: scale(1.02);
+  }
+  50% {
+    background: linear-gradient(135deg, #fbbf24 0%, #fff 100%);
+    transform: scale(1);
+  }
+  75% {
+    background: linear-gradient(135deg, #fff 0%, #f59e0b 100%);
+    transform: scale(1.02);
+  }
+}
+
+.animate-jackpot {
+  animation: jackpot-flash 0.5s ease-in-out infinite;
+}
+
+/* Gold shimmer effect for jackpot text */
+@keyframes gold-shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+.animate-gold-shimmer {
+  background: linear-gradient(
+    90deg,
+    #fbbf24 0%,
+    #fef3c7 25%,
+    #fbbf24 50%,
+    #fef3c7 75%,
+    #fbbf24 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gold-shimmer 3s linear infinite;
+}
+
+/* Prize pool number tick animation */
+@keyframes number-tick-up {
+  0% {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-tick-up {
+  animation: number-tick-up 0.15s ease-out;
+}
+
+/* Win amount pop animation */
+@keyframes win-pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-win-pop {
+  animation: win-pop 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+/* Pulse glow for winning symbol */
+@keyframes symbol-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 5px rgba(251, 191, 36, 0.5));
+  }
+  50% {
+    filter: drop-shadow(0 0 20px rgba(251, 191, 36, 1));
+  }
+}
+
+.animate-symbol-glow {
+  animation: symbol-glow 0.5s ease-in-out infinite;
+}
+
+/* Button press effect */
+@keyframes button-press {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-button-press {
+  animation: button-press 0.15s ease-in-out;
+}
+
+/* Spin button gradient animation */
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-gradient {
+  background: linear-gradient(
+    270deg,
+    #ec4899,
+    #fbbf24,
+    #ec4899
+  );
+  background-size: 200% 200%;
+  animation: gradient-shift 3s ease infinite;
+}
+
+/* Waiting dots animation */
+@keyframes waiting-dots {
+  0%, 20% {
+    content: '.';
+  }
+  40% {
+    content: '..';
+  }
+  60%, 100% {
+    content: '...';
+  }
+}
+
+/* Original animations (kept for compatibility) */
 @keyframes glow-pulse {
   0%,
   100% {
@@ -49,4 +285,33 @@ body {
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* Slot machine specific styles */
+.slot-reel {
+  perspective: 1000px;
+}
+
+.slot-symbol {
+  backface-visibility: hidden;
+}
+
+/* Vegas-style border with lights */
+.vegas-border {
+  position: relative;
+  border: 3px solid #fbbf24;
+  border-radius: 12px;
+}
+
+.vegas-border::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border: 2px solid transparent;
+  border-radius: 16px;
+  background: linear-gradient(45deg, #ec4899, #fbbf24, #ec4899, #fbbf24) border-box;
+  -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
 }

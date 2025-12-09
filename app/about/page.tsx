@@ -5,7 +5,7 @@ import { sdk } from "@farcaster/miniapp-sdk";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { NavBar } from "@/components/nav-bar";
 import { AddToFarcasterButton } from "@/components/add-to-farcaster-button";
-import { DuneDashboardButton } from "@/components/dune-dashboard-button";
+import { DonutSymbol } from "@/components/donut-icon";
 
 type MiniAppContext = {
   user?: {
@@ -101,93 +101,109 @@ export default function AboutPage() {
           </div>
 
           <div className="space-y-6 px-2 overflow-y-auto scrollbar-hide flex-1">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2">
               <AddToFarcasterButton
-                variant="default"
-              />
-              <DuneDashboardButton
                 variant="default"
               />
             </div>
 
             <section>
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                What Is $DONUT
+              <h2 className="text-lg font-bold text-yellow-400 mb-2">
+                What Is Donutardio?
               </h2>
               <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>$DONUT is a store-of-value token on Base</li>
-                <li>Mined through a continuous Dutch auction instead of proof-of-work or staking</li>
-                <li>Auction revenue increases $DONUT's liquidity and scarcity</li>
+                <li>Vegas-style slot machine on Base</li>
+                <li>Pay ETH to spin, win <DonutSymbol /> DOTARD tokens from the prize pool</li>
+                <li>Prize pool grows continuously from emissions</li>
+                <li>VRF-powered random outcomes - provably fair!</li>
               </ul>
             </section>
 
             <section>
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                How Mining Works
+              <h2 className="text-lg font-bold text-yellow-400 mb-2">
+                How It Works
               </h2>
               <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>Only one active miner at a time, called the King Glazer</li>
-                <li>The right to mine is bought with ETH through a continuous Dutch auction:</li>
-                <li className="pl-6 list-none">- Price doubles after each purchase</li>
+                <li>Spin price follows a Dutch auction:</li>
+                <li className="pl-6 list-none">- Price doubles after each spin</li>
                 <li className="pl-6 list-none">- Then decays to 0 over one hour</li>
-                <li className="pl-6 list-none">- Anyone can purchase control of emissions at the current price</li>
+                <li>90% of spin revenue goes to treasury</li>
+                <li>10% goes to team</li>
+                <li>VRF callback determines your win amount</li>
               </ul>
             </section>
 
             <section>
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                Revenue Split
+              <h2 className="text-lg font-bold text-yellow-400 mb-2">
+                Prize Pool
               </h2>
               <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>80% → previous King Glazer</li>
-                <li>15% → treasury (Blazery)</li>
-                <li>5% → provider (frontend host)</li>
+                <li><DonutSymbol /> DOTARD tokens are emitted continuously</li>
+                <li>Starting at 2 DOTARD/sec, halving every 30 days</li>
+                <li>Tail emission: 0.01 DOTARD/sec forever</li>
+                <li>Each spin mints pending emissions to the prize pool</li>
               </ul>
             </section>
 
             <section>
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                Emission Schedule
+              <h2 className="text-lg font-bold text-yellow-400 mb-2">
+                Win Odds
               </h2>
-              <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>Starts at 4 DONUT / sec</li>
-                <li>Halving every 30 days</li>
-                <li>Tail emission: 0.01 DONUT / sec (forever)</li>
-              </ul>
-            </section>
-
-            <section>
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                Proof of Just-In-Time Stake
-              </h2>
-              <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>ETH is "staked" only while controlling emissions</li>
-                <li>Profit if the next purchase pays more</li>
-                <li>Lose if it pays less</li>
-                <li>Earn $DONUT the entire time you hold control</li>
-              </ul>
-            </section>
-
-            <section>
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                Treasury
-              </h2>
-              <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>Treasury ETH is used to buy and burn DONUT-WETH LP in the Blazery</li>
-                <li>Once sufficient liquidity is established, the Glazery can be upgraded to buy and burn DONUT directly, or governance can decide to acquire other assets or reinvest the treasury</li>
-              </ul>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="bg-zinc-900 rounded p-2 flex items-center gap-2">
+                  <span className="text-2xl">🍒</span>
+                  <div>
+                    <div className="text-white">Cherry</div>
+                    <div className="text-gray-400">1% pool • 50% chance</div>
+                  </div>
+                </div>
+                <div className="bg-zinc-900 rounded p-2 flex items-center gap-2">
+                  <span className="text-2xl">🍋</span>
+                  <div>
+                    <div className="text-white">Lemon</div>
+                    <div className="text-gray-400">2% pool • 25% chance</div>
+                  </div>
+                </div>
+                <div className="bg-zinc-900 rounded p-2 flex items-center gap-2">
+                  <span className="text-2xl">📊</span>
+                  <div>
+                    <div className="text-white">Bar</div>
+                    <div className="text-gray-400">5% pool • 15% chance</div>
+                  </div>
+                </div>
+                <div className="bg-zinc-900 rounded p-2 flex items-center gap-2">
+                  <span className="text-2xl">🔔</span>
+                  <div>
+                    <div className="text-white">Bell</div>
+                    <div className="text-gray-400">10% pool • 7% chance</div>
+                  </div>
+                </div>
+                <div className="bg-zinc-900 rounded p-2 flex items-center gap-2">
+                  <span className="text-2xl">7️⃣</span>
+                  <div>
+                    <div className="text-white">Seven</div>
+                    <div className="text-gray-400">25% pool • 2.5% chance</div>
+                  </div>
+                </div>
+                <div className="bg-zinc-900 rounded p-2 flex items-center gap-2 border border-yellow-500/50">
+                  <span className="text-2xl">💎</span>
+                  <div>
+                    <div className="text-yellow-400 font-bold">Diamond</div>
+                    <div className="text-gray-400">50% pool • 0.5% chance</div>
+                  </div>
+                </div>
+              </div>
             </section>
 
             <section className="pb-4">
-              <h2 className="text-lg font-bold text-pink-400 mb-2">
-                Builder Codes
+              <h2 className="text-lg font-bold text-yellow-400 mb-2">
+                Contracts
               </h2>
               <ul className="space-y-1 text-sm text-gray-300 list-disc list-inside">
-                <li>Anyone can host their own Donut Shop by deploying a frontend</li>
-                <li>Add your builder code to earn 5% of all purchases made through your shop</li>
-                <li>The protocol will launch with two official Donut Shops:</li>
-                <li className="pl-6 list-none">- GlazeCorp by @heesh</li>
-                <li className="pl-6 list-none">- Pinky Glazer by @bigbroc</li>
+                <li>Network: Base</li>
+                <li className="break-all"><DonutSymbol /> DOTARD: 0x1bFD...4315</li>
+                <li className="break-all">Rig: 0x9C89...7513</li>
+                <li className="break-all">Multicall: 0x027F...Af8D</li>
               </ul>
             </section>
           </div>

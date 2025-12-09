@@ -1,18 +1,14 @@
 export const CONTRACT_ADDRESSES = {
-  donut: "0xAE4a37d554C6D6F3E398546d8566B25052e0169C",
-  miner: "0xF69614F4Ee8D4D3879dd53d5A039eB3114C794F6",
-  multicall: "0x3ec144554b484C6798A683E34c8e8E222293f323",
-  provider: "0xba366c82815983ff130c23ced78bd95e1f2c18ea",
+  // Slot machine contracts (Donatardio)
+  unit: "0x1bFD334638F2929a1C8b1437A06992cC01C5A315",
+  rig: "0x9C8959C9675f26852Ed9E048c92C5d32C9eE7513",
+  multicall: "0x027F9C2306f998a2994005eEc1a5F61c2259Af8D",
 } as const;
 
+// Multicall ABI for slot machine
 export const MULTICALL_ABI = [
   {
     inputs: [
-      {
-        internalType: "address",
-        name: "provider",
-        type: "address",
-      },
       {
         internalType: "uint256",
         name: "epochId",
@@ -28,38 +24,10 @@ export const MULTICALL_ABI = [
         name: "maxPrice",
         type: "uint256",
       },
-      {
-        internalType: "string",
-        name: "uri",
-        type: "string",
-      },
     ],
-    name: "mine",
+    name: "spin",
     outputs: [],
     stateMutability: "payable",
-    type: "function",
-  },
-  {
-    inputs: [
-      {
-        internalType: "uint256",
-        name: "epochId",
-        type: "uint256",
-      },
-      {
-        internalType: "uint256",
-        name: "deadline",
-        type: "uint256",
-      },
-      {
-        internalType: "uint256",
-        name: "maxPaymentTokenAmount",
-        type: "uint256",
-      },
-    ],
-    name: "buy",
-    outputs: [],
-    stateMutability: "nonpayable",
     type: "function",
   },
   {
@@ -70,59 +38,24 @@ export const MULTICALL_ABI = [
         type: "address",
       },
     ],
-    name: "getMiner",
+    name: "getRig",
     outputs: [
       {
         components: [
           {
-            internalType: "uint16",
-            name: "epochId",
-            type: "uint16",
-          },
-          {
-            internalType: "uint192",
-            name: "initPrice",
-            type: "uint192",
-          },
-          {
-            internalType: "uint40",
-            name: "startTime",
-            type: "uint40",
-          },
-          {
             internalType: "uint256",
-            name: "glazed",
+            name: "ups",
             type: "uint256",
           },
           {
             internalType: "uint256",
-            name: "price",
+            name: "unitPrice",
             type: "uint256",
           },
           {
             internalType: "uint256",
-            name: "dps",
+            name: "unitBalance",
             type: "uint256",
-          },
-          {
-            internalType: "uint256",
-            name: "nextDps",
-            type: "uint256",
-          },
-          {
-            internalType: "uint256",
-            name: "donutPrice",
-            type: "uint256",
-          },
-          {
-            internalType: "address",
-            name: "miner",
-            type: "address",
-          },
-          {
-            internalType: "string",
-            name: "uri",
-            type: "string",
           },
           {
             internalType: "uint256",
@@ -136,11 +69,26 @@ export const MULTICALL_ABI = [
           },
           {
             internalType: "uint256",
-            name: "donutBalance",
+            name: "prizePool",
+            type: "uint256",
+          },
+          {
+            internalType: "uint256",
+            name: "pendingEmissions",
+            type: "uint256",
+          },
+          {
+            internalType: "uint256",
+            name: "epochId",
+            type: "uint256",
+          },
+          {
+            internalType: "uint256",
+            name: "price",
             type: "uint256",
           },
         ],
-        internalType: "struct Multicall.MinerState",
+        internalType: "struct Multicall.RigState",
         name: "state",
         type: "tuple",
       },
@@ -149,69 +97,114 @@ export const MULTICALL_ABI = [
     type: "function",
   },
   {
-    inputs: [
-      {
-        internalType: "address",
-        name: "account",
-        type: "address",
-      },
-    ],
-    name: "getAuction",
+    inputs: [],
+    name: "getEntropyFee",
     outputs: [
       {
-        components: [
-          {
-            internalType: "uint16",
-            name: "epochId",
-            type: "uint16",
-          },
-          {
-            internalType: "uint192",
-            name: "initPrice",
-            type: "uint192",
-          },
-          {
-            internalType: "uint40",
-            name: "startTime",
-            type: "uint40",
-          },
-          {
-            internalType: "address",
-            name: "paymentToken",
-            type: "address",
-          },
-          {
-            internalType: "uint256",
-            name: "price",
-            type: "uint256",
-          },
-          {
-            internalType: "uint256",
-            name: "paymentTokenPrice",
-            type: "uint256",
-          },
-          {
-            internalType: "uint256",
-            name: "wethAccumulated",
-            type: "uint256",
-          },
-          {
-            internalType: "uint256",
-            name: "wethBalance",
-            type: "uint256",
-          },
-          {
-            internalType: "uint256",
-            name: "paymentTokenBalance",
-            type: "uint256",
-          },
-        ],
-        internalType: "struct Multicall.AuctionState",
-        name: "state",
-        type: "tuple",
+        internalType: "uint256",
+        name: "",
+        type: "uint256",
       },
     ],
     stateMutability: "view",
     type: "function",
+  },
+  {
+    inputs: [],
+    name: "getOdds",
+    outputs: [
+      {
+        internalType: "uint256[]",
+        name: "",
+        type: "uint256[]",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+// Rig contract ABI for event watching
+export const RIG_ABI = [
+  {
+    anonymous: false,
+    inputs: [
+      {
+        indexed: true,
+        internalType: "address",
+        name: "spinner",
+        type: "address",
+      },
+      {
+        indexed: true,
+        internalType: "uint256",
+        name: "epochId",
+        type: "uint256",
+      },
+      {
+        indexed: false,
+        internalType: "uint256",
+        name: "oddsPercent",
+        type: "uint256",
+      },
+      {
+        indexed: false,
+        internalType: "uint256",
+        name: "amount",
+        type: "uint256",
+      },
+    ],
+    name: "Rig__Win",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      {
+        indexed: true,
+        internalType: "address",
+        name: "sender",
+        type: "address",
+      },
+      {
+        indexed: true,
+        internalType: "address",
+        name: "spinner",
+        type: "address",
+      },
+      {
+        indexed: true,
+        internalType: "uint256",
+        name: "epochId",
+        type: "uint256",
+      },
+      {
+        indexed: false,
+        internalType: "uint256",
+        name: "price",
+        type: "uint256",
+      },
+    ],
+    name: "Rig__Spin",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      {
+        indexed: true,
+        internalType: "uint256",
+        name: "epochId",
+        type: "uint256",
+      },
+      {
+        indexed: true,
+        internalType: "uint64",
+        name: "sequenceNumber",
+        type: "uint64",
+      },
+    ],
+    name: "Rig__EntropyRequested",
+    type: "event",
   },
 ] as const;
