@@ -274,8 +274,15 @@ export default function DonutardioPage() {
   const [localSpinState, setLocalSpinState] = useState<SpinState>('idle');
   const [pendingEpochId, setPendingEpochId] = useState<bigint | null>(null);
 
+  // Track if we just finished our own spin to force show result
+  const [localShowResult, setLocalShowResult] = useState(false);
+  const localShowResultTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Combined spinning state: either global (from blockchain) or local (user's tx pending)
   const isSpinning = isGlobalSpinning || localSpinState === 'pending' || localSpinState === 'confirming' || localSpinState === 'waiting_vrf';
+
+  // Show result either from global hook or from local detection
+  const shouldShowResult = showWinResult || localShowResult;
 
   // Display symbols - show last win symbol (persists until next spin starts)
   // When spinning, symbol is null so reels animate randomly
@@ -340,6 +347,7 @@ export default function DonutardioPage() {
     return () => {
       if (vrfTimeoutRef.current) clearTimeout(vrfTimeoutRef.current);
       if (balancePollRef.current) clearInterval(balancePollRef.current);
+      if (localShowResultTimeoutRef.current) clearTimeout(localShowResultTimeoutRef.current);
     };
   }, []);
 
@@ -549,7 +557,7 @@ export default function DonutardioPage() {
     writeContract,
   ]);
 
-  // Helper to handle detected win (simplified - global hook handles display)
+  // Helper to handle detected win
   const handleWinDetected = useCallback(() => {
     // Clear all pending timeouts/intervals
     if (vrfTimeoutRef.current) {
@@ -560,6 +568,15 @@ export default function DonutardioPage() {
       clearInterval(balancePollRef.current);
       balancePollRef.current = null;
     }
+
+    // Show result locally for 10 seconds
+    setLocalShowResult(true);
+    if (localShowResultTimeoutRef.current) {
+      clearTimeout(localShowResultTimeoutRef.current);
+    }
+    localShowResultTimeoutRef.current = setTimeout(() => {
+      setLocalShowResult(false);
+    }, 10000);
 
     setLocalSpinState('idle');
     preSpinBalanceRef.current = null;
@@ -709,7 +726,7 @@ export default function DonutardioPage() {
             {/* Jackpot - Top Left */}
             <div className={cn(
               "flex-1 rounded-lg py-1.5 px-2",
-              showWinResult && lastWin?.symbol.tier === 'jackpot'
+              shouldShowResult && lastWin?.symbol.tier === 'jackpot'
                 ? "animate-jackpot"
                 : "bg-gradient-to-br from-yellow-600 to-yellow-500"
             )}>
@@ -743,7 +760,7 @@ export default function DonutardioPage() {
             "relative rounded-xl overflow-hidden",
             "bg-zinc-900/50 border",
             isSpinning ? "border-yellow-500/50" : "border-zinc-800/50",
-            showWinResult && "animate-win-shake"
+            shouldShowResult && "animate-win-shake"
           )}>
             {/* Reels */}
             <div className="flex justify-center items-center gap-3 p-4">
@@ -752,27 +769,27 @@ export default function DonutardioPage() {
                 isIdleSpin={true}
                 symbol={displaySymbol}
                 delay={0}
-                isWinning={showWinResult}
+                isWinning={shouldShowResult}
                 idleSpeed={0.035}
-                showResult={showWinResult}
+                showResult={shouldShowResult}
               />
               <SlotReel
                 isSpinning={isSpinning}
                 isIdleSpin={true}
                 symbol={displaySymbol}
                 delay={100}
-                isWinning={showWinResult}
+                isWinning={shouldShowResult}
                 idleSpeed={0.045}
-                showResult={showWinResult}
+                showResult={shouldShowResult}
               />
               <SlotReel
                 isSpinning={isSpinning}
                 isIdleSpin={true}
                 symbol={displaySymbol}
                 delay={200}
-                isWinning={showWinResult}
+                isWinning={shouldShowResult}
                 idleSpeed={0.055}
-                showResult={showWinResult}
+                showResult={shouldShowResult}
               />
             </div>
           </div>
